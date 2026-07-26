@@ -3,3 +3,23 @@
 # Columns: company_name, industry, city, state, website, contact_name, contact_email, contact_phone
 # Add rows below to seed the agent's discovery pipeline.
 company_name,industry,city,state,website,contact_name,contact_email,contact_phone
+Caterpillar Inc.,manufacturing,Peoria,IL,www.caterpillar.com,Jim Umpleby,,
+Deere & Company,manufacturing,Moline,IL,www.deere.com,John May,,
+Archer-Daniels-Midland Company,agriculture,Decatur,IL,www.adm.com,Juan Luciano,,
+Tyson Foods Inc.,agriculture,Springdale,AR,www.tysonfoods.com,Donnie King,,
+Bunge Limited,agriculture,Chesterfield,MO,www.bunge.com,Greg Heckman,,
+Cargill Inc.,agriculture,Wayzata,MN,www.cargill.com,Brian Sikes,,
+Walmart Inc.,retail_distribution,Bentonville,AR,www.walmart.com,Doug McMillon,,
+Target Corporation,retail_distribution,Minneapolis,MN,www.target.com,Brian Cornell,,
+Costco Wholesale,retail_distribution,Issaquah,WA,www.costco.com,Ron Vachris,,
+Home Depot Inc.,retail_distribution,Atlanta,GA,www.homedepot.com,Ted Decker,,
+Lowe's Companies Inc.,retail_distribution,Mooresville,NC,www.lowes.com,Marvin Ellison,,
+Kroger Co.,retail_distribution,Cincinnati,OH,www.kroger.com,Rodney McMullen,,
+Sysco Corporation,retail_distribution,Houston,TX,www.sysco.com,Kevin Hourican,,
+US Foods Holding Corp.,retail_distribution,Rosemont,IL,www.usfoods.com,Dave Flitman,,
+Nucor Corporation,manufacturing,Charlotte,NC,www.nucor.com,Leon Topalian,,
+Steel Dynamics Inc.,manufacturing,Fort Wayne,IN,www.steeldynamics.com,Mark Millett,,
+Dow Inc.,manufacturing,Midland,MI,www.dow.com,Jim Fitterling,,
+3M Company,manufacturing,St. Paul,MN,www.3m.com,William Brown,,
+General Mills Inc.,agriculture,Minneapolis,MN,www.generalmills.com,Jeff Harmening,,
+Kraft Heinz Company,manufacturing,Chicago,IL,www.kraftheinz.com,Carlos Abrams-Rivera,,
