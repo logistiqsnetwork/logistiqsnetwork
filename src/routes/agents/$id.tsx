@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import AuthGuard from "~/components/AuthGuard";
-import { getCampaign, runCampaign, getAgentActivity, getProspects, updateCampaign } from "~/lib/server-fns";
+import { getCampaign, runCampaign, getAgentActivity, getProspects, updateCampaign, getPendingOutreach, sendOutreachBatch } from "~/lib/server-fns";
 import { useEffect, useState } from "react";
 
 export const Route = createFileRoute("/agents/$id")({
@@ -100,6 +100,12 @@ function AgentDetail() {
       const pData = await getProspects({ campaignId: id, limit: 50 });
       setProspects((pData.prospects || []) as Prospect[]);
       const act = await getAgentActivity();
+      try {
+        const po = await getPendingOutreach({ campaignId: id });
+        setPendingOutreach(po as any[]);
+      } catch (_) {
+        setPendingOutreach([]);
+      }
       setActivity(((act as ActivityItem[]) || []).filter((a) => a.campaign_id === id));
     } catch (err) {
       console.error("Failed to load campaign:", err);
@@ -259,6 +265,62 @@ function AgentDetail() {
             )}
           </div>
         </div>
+        {/* Review & Send Pending Outreach */}
+        {pendingOutreach.length > 0 && (
+          <div className="mt-8">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-gray-900">
+                Review & Send ({pendingOutreach.length} pending)
+              </h2>
+              {selectedOutreach.size > 0 && (
+                <button
+                  onClick={handleSendSelected}
+                  disabled={sending}
+                  className="rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+                >
+                  {sending ? "Sending..." : `Send Selected (${selectedOutreach.size})`}
+                </button>
+              )}
+            </div>
+            <div className="mt-4 divide-y divide-gray-100 rounded-lg border border-gray-200">
+              {pendingOutreach.map((o: any) => (
+                <div key={o.id} className="flex items-center gap-3 px-4 py-3 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={selectedOutreach.has(o.id)}
+                    onChange={() => toggleSelect(o.id)}
+                    className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-gray-900 truncate">
+                        {o.company_name}
+                      </span>
+                      <span className="text-xs text-gray-400">
+                        &middot; {o.contact_name || "No contact"}
+                      </span>
+                    </div>
+                    {o.subject && (
+                      <p className="text-xs text-gray-500 truncate">
+                        {o.subject}
+                      </p>
+                    )}
+                    {o.contact_email && (
+                      <p className="text-xs text-indigo-500">{o.contact_email}</p>
+                    )}
+                  </div>
+                  <Link
+                    to="/companies/$id"
+                    params={{ id: o.company_id }}
+                    className="text-xs text-indigo-600 hover:text-indigo-800 whitespace-nowrap"
+                  >
+                    View Company
+                  </Link>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="mt-8">
           <h2 className="text-lg font-semibold text-gray-900">Campaign Activity</h2>
           {activity.length === 0 ? (

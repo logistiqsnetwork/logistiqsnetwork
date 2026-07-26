@@ -869,3 +869,151 @@ export const getCRMStats = createServerFn({ method: "GET" }).handler(async () =>
     followUpsDue: followUpsDue[0]?.count ?? 0,
   };
 });
+
+// ---------------------------------------------------------------------------
+// Email Outreach — Send via Resend
+// ---------------------------------------------------------------------------
+
+/**
+ * Send a single pending outreach record via email using Resend.
+ */
+export const sendOutreach = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as { outreachId: string })
+  .handler(async ({ data }) => {
+    const session = await getSessionFromFn();
+    if (!session) throw new Error("Unauthorized");
+
+    const { getSql } = await import("~/lib/db");
+    const sql = getSql();
+
+    const rows = sql`
+      SELECT o.id, o.company_id, o.contact_id, o.status, o.subject, o.body, o.notes, o.method,
+             ct.email as contact_email, ct.first_name, ct.last_name
+      FROM outreach_records o
+      LEFT JOIN contacts ct ON o.contact_id = ct.id
+      WHERE o.id = ${data.outreachId}
+    ` as any[];
+
+    if (rows.length === 0) throw new Error("Outreach record not found");
+    const record = rows[0];
+
+    if (record.status !== "pending") {
+      throw new Error(`Outreach record is not pending (current status: ${record.status})`);
+    }
+    if (record.method !== "email") {
+      throw new Error(`Cannot send non-email outreach via Resend (method: ${record.method})`);
+    }
+    const contactEmail = record.contact_email;
+    if (!contactEmail || !contactEmail.includes("@")) {
+      throw new Error("Contact has no valid email address");
+    }
+
+    const subject = record.subject || "Introduction from LOGISTIQS NETWORK";
+    const body = record.body || record.notes || "<p>Hello from LOGISTIQS NETWORK.</p>";
+
+    console.log(`[sendOutreach] Sending to ${contactEmail} — "${subject}"`);
+
+    const { sendEmail } = await import("~/lib/email");
+    let messageId: string | undefined;
+    try {
+      const result = await sendEmail({ to: contactEmail, subject, body });
+      messageId = result.messageId;
+    } catch (err: any) {
+      console.error(`[sendOutreach] Failed to send:`, err.message);
+      throw new Error(`Email sending failed: ${err.message}`);
+    }
+
+    const now = new Date().toISOString();
+    sql`UPDATE outreach_records SET status = 'sent', updated_at = ${now} WHERE id = ${data.outreachId}`;
+
+    return { success: true, messageId: messageId || "unknown" };
+  });
+
+/**
+ * Send multiple pending outreach records at once.
+ */
+export const sendOutreachBatch = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as { outreachIds: string[] })
+  .handler(async ({ data }) => {
+    const session = await getSessionFromFn();
+    if (!session) throw new Error("Unauthorized");
+
+    const results: { id: string; success: boolean; error?: string }[] = [];
+
+    for (const outreachId of data.outreachIds) {
+      try {
+        const { getSql } = await import("~/lib/db");
+        const sql = getSql();
+
+        const rows = sql`
+          SELECT o.id, o.status, o.subject, o.body, o.notes, o.method,
+                 ct.email as contact_email, ct.first_name, ct.last_name
+          FROM outreach_records o
+          LEFT JOIN contacts ct ON o.contact_id = ct.id
+          WHERE o.id = ${outreachId}
+        ` as any[];
+
+        if (rows.length === 0) {
+          results.push({ id: outreachId, success: false, error: "Record not found" });
+          continue;
+        }
+        const record = rows[0];
+
+        if (record.status !== "pending") {
+          results.push({ id: outreachId, success: false, error: `Status is ${record.status}` });
+          continue;
+        }
+        if (record.method !== "email") {
+          results.push({ id: outreachId, success: false, error: `Method is ${record.method}` });
+          continue;
+        }
+        const contactEmail = record.contact_email;
+        if (!contactEmail || !contactEmail.includes("@")) {
+          results.push({ id: outreachId, success: false, error: "No valid email" });
+          continue;
+        }
+
+        const subject = record.subject || "Introduction from LOGISTIQS NETWORK";
+        const body = record.body || record.notes || "<p>Hello from LOGISTIQS NETWORK.</p>";
+
+        const { sendEmail } = await import("~/lib/email");
+        try {
+          await sendEmail({ to: contactEmail, subject, body });
+          const now = new Date().toISOString();
+          sql`UPDATE outreach_records SET status = 'sent', updated_at = ${now} WHERE id = ${outreachId}`;
+          results.push({ id: outreachId, success: true });
+        } catch (err: any) {
+          results.push({ id: outreachId, success: false, error: err.message });
+        }
+      } catch (err: any) {
+        results.push({ id: outreachId, success: false, error: err.message });
+      }
+    }
+
+    return { results };
+  });
+
+// ---------------------------------------------------------------------------
+// CRM — Pending Outreach for Campaign
+// ---------------------------------------------------------------------------
+
+export const getPendingOutreach = createServerFn({ method: "GET" })
+  .validator((d: unknown) => d as { campaignId: string })
+  .handler(async ({ data }) => {
+    const { getSql } = await import("~/lib/db");
+    const sql = getSql();
+
+    const rows = sql`
+      SELECT o.*, c.name as company_name,
+             ct.first_name || ' ' || ct.last_name as contact_name,
+             ct.email as contact_email
+      FROM outreach_records o
+      JOIN companies c ON o.company_id = c.id
+      LEFT JOIN contacts ct ON o.contact_id = ct.id
+      WHERE o.agent_campaign_id = ${data.campaignId}
+        AND o.status = 'pending'
+      ORDER BY o.created_at DESC
+    ` as any[];
+
+    return rows;
+  });

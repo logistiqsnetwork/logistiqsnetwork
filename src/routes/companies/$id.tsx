@@ -8,6 +8,7 @@ import {
   createOutreach,
   getContacts,
   getOutreach,
+  sendOutreach,
   type CompanyRow,
   type ContactRow,
 } from "~/lib/server-fns";
@@ -674,6 +675,15 @@ function CompanyDetail() {
                       >
                         {STATUS_LABELS[o.status] || o.status}
                       </span>
+                    {o.status === "pending" && o.method === "email" && (
+                      <button
+                        onClick={() => handleSendOutreach(o.id)}
+                        disabled={saving}
+                        className="ml-2 rounded bg-green-600 px-2 py-0.5 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50"
+                      >
+                        {saving ? "Sending..." : "Send"}
+                      </button>
+                    )}
                     </div>
                     {o.contact_name && (
                       <p className="text-xs text-gray-500">
