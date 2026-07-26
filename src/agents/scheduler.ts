@@ -8,8 +8,6 @@
  * campaigns and runs any whose next_run_at <= now.
  */
 
-import { runDueCampaigns } from "~/agents/freight-agent";
-
 let _started = false;
 
 export function startScheduler(): void {
@@ -23,8 +21,12 @@ export function startScheduler(): void {
     Bun.cron("0 6 * * *", async () => {
       console.log("[Scheduler] Cron triggered — running due campaigns...");
       try {
-        await runDueCampaigns();
-        console.log("[Scheduler] Campaign run complete.");
+        const { runDueCampaigns } = await import("~/agents/freight-agent");
+        const result = await runDueCampaigns();
+        console.log(
+          `[Scheduler] Campaign run complete: ${result.total} campaigns, ` +
+            `${result.results.length} succeeded.`,
+        );
       } catch (err) {
         console.error("[Scheduler] Campaign run failed:", err);
       }
@@ -39,6 +41,7 @@ export function startScheduler(): void {
       if (now.getUTCHours() === 6) {
         console.log("[Scheduler] Interval triggered — running due campaigns...");
         try {
+          const { runDueCampaigns } = await import("~/agents/freight-agent");
           await runDueCampaigns();
         } catch (err) {
           console.error("[Scheduler] Campaign run failed:", err);
@@ -53,10 +56,16 @@ export function startScheduler(): void {
  * Manually trigger a specific campaign run.
  * Called from the API route POST /api/agents/campaigns/:id/run.
  */
-export async function runCampaignNow(campaignId: string): Promise<{ runId: string }> {
+export async function runCampaignNow(campaignId: string): Promise<{
+  runId: string;
+  validated: number;
+  drafts: number;
+}> {
   const { runPipelineForCampaign } = await import("~/agents/freight-agent");
   const runId = crypto.randomUUID();
-  console.log(`[Scheduler] Manual run triggered for campaign ${campaignId} — runId: ${runId}`);
-  await runPipelineForCampaign(campaignId, runId);
-  return { runId };
+  console.log(
+    `[Scheduler] Manual run triggered for campaign ${campaignId} — runId: ${runId}`,
+  );
+  const result = await runPipelineForCampaign(campaignId, runId);
+  return { runId, ...result };
 }

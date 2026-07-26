@@ -313,4 +313,194 @@ export const claimLoad = createServerFn({ method: "POST" })
     `;
 
     return { success: true };
+    });
+
+    // ---------------------------------------------------------------------------
+    // Agent Campaigns: create, list, get, run, activity
+    // ---------------------------------------------------------------------------
+
+    function safeJsonParse(str: string | null, fallback: any): any {
+    try { return str ? JSON.parse(str) : fallback; } catch { return fallback; }
+    }
+
+    export const createCampaign = createServerFn({ method: "POST" })
+    .validator((d: unknown) => d as {
+    name: string;
+    target_industries?: string[];
+    target_regions?: string[];
+    prospect_source?: string;
+    max_prospects?: number;
+    outreach_template?: string;
+    schedule_cron?: string;
+    notes?: string;
+    status?: string;
+    })
+    .handler(async ({ data }) => {
+    const { getSql } = await import("~/lib/db");
+    const sql = getSql();
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    sql`
+      INSERT INTO agent_campaigns (
+        id, name, status,
+        target_industries, target_regions,
+        prospect_source, max_prospects,
+        outreach_template, schedule_cron,
+        notes, created_at, updated_at
+      ) VALUES (
+        ${id}, ${data.name}, ${data.status || "draft"},
+        ${JSON.stringify(data.target_industries || [])}, ${JSON.stringify(data.target_regions || [])},
+        ${data.prospect_source || "seed_list"}, ${data.max_prospects || 50},
+        ${data.outreach_template || null}, ${data.schedule_cron || null},
+        ${data.notes || null}, ${now}, ${now}
+      )
+    `;
+
+    return { id };
+    });
+
+    export const getCampaigns = createServerFn({ method: "GET" }).handler(async () => {
+    const { getSql } = await import("~/lib/db");
+    const sql = getSql();
+    const rows = sql`
+    SELECT * FROM agent_campaigns ORDER BY created_at DESC
+    ` as any[];
+
+    return rows.map((r: any) => ({
+    ...r,
+    target_industries: safeJsonParse(r.target_industries, []),
+    target_regions: safeJsonParse(r.target_regions, []),
+    }));
+    });
+
+    export const getCampaign = createServerFn({ method: "GET" })
+    .validator((d: unknown) => d as { id: string })
+    .handler(async ({ data }) => {
+    const { getSql } = await import("~/lib/db");
+    const sql = getSql();
+
+    const rows = sql`SELECT * FROM agent_campaigns WHERE id = ${data.id}` as any[];
+    if (rows.length === 0) return null;
+
+    const c = rows[0];
+    const campaign = {
+      ...c,
+      target_industries: safeJsonParse(c.target_industries, []),
+      target_regions: safeJsonParse(c.target_regions, []),
+    };
+
+    // Fetch prospect summary
+    const stats = sql`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN status IN ('validated','company_created','contacted','converted') THEN 1 ELSE 0 END) as active,
+        SUM(CASE WHEN status = 'duplicate' THEN 1 ELSE 0 END) as duplicates,
+        SUM(CASE WHEN status = 'contacted' THEN 1 ELSE 0 END) as contacted
+      FROM agent_prospects WHERE campaign_id = ${data.id}
+    ` as any[];
+
+    return { campaign, stats: stats[0] || {} };
+    });
+
+    export const runCampaign = createServerFn({ method: "POST" })
+    .validator((d: unknown) => d as { id: string })
+    .handler(async ({ data }) => {
+    const { runCampaignNow } = await import("~/agents/scheduler");
+    const result = await runCampaignNow(data.id);
+    return result;
+    });
+
+    export const getAgentActivity = createServerFn({ method: "GET" }).handler(async () => {
+    const { getSql } = await import("~/lib/db");
+    const sql = getSql();
+
+    const prospects = sql`
+    SELECT
+      'prospect_discovered' as event_type,
+      ap.created_at as timestamp,
+      ap.company_name_raw as entity_name,
+      ap.industry,
+      ap.region,
+      ap.status,
+      ac.name as campaign_name,
+      ap.campaign_id,
+      ap.id as entity_id
+    FROM agent_prospects ap
+    JOIN agent_campaigns ac ON ap.campaign_id = ac.id
+    ORDER BY ap.created_at DESC
+    LIMIT 20
+    ` as any[];
+
+    const outreach = sql`
+    SELECT
+      'outreach_drafted' as event_type,
+      o.created_at as timestamp,
+      c.name as entity_name,
+      o.subject,
+      o.status,
+      ac.name as campaign_name,
+      o.agent_campaign_id as campaign_id,
+      o.id as entity_id
+    FROM outreach_records o
+    JOIN companies c ON o.company_id = c.id
+    LEFT JOIN agent_campaigns ac ON o.agent_campaign_id = ac.id
+    WHERE o.agent_campaign_id IS NOT NULL
+    ORDER BY o.created_at DESC
+    LIMIT 20
+    ` as any[];
+
+    const all = [...prospects, ...outreach]
+      .sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""))
+      .slice(0, 20);
+
+    return all;
+    });
+
+    export const getProspects = createServerFn({ method: "GET" })
+    .validator((d: unknown) => d as { campaignId: string; status?: string; page?: number; limit?: number })
+    .handler(async ({ data }) => {
+      const { getSql } = await import("~/lib/db");
+      const sql = getSql();
+      const page = data.page || 1;
+      const limit = data.limit || 50;
+      const offset = (page - 1) * limit;
+
+      let whereClause = `WHERE ap.campaign_id = '${data.campaignId.replace(/'/g, "''")}'`;
+      if (data.status) whereClause += ` AND ap.status = '${data.status.replace(/'/g, "''")}'`;
+
+      const countRows = sql.unsafe(
+        `SELECT COUNT(*) as total FROM agent_prospects ap ${whereClause}`
+      ) as any[];
+      const total = countRows[0]?.total || 0;
+
+      const rows = sql.unsafe(
+        `SELECT ap.*, c.name as company_name_linked FROM agent_prospects ap LEFT JOIN companies c ON ap.company_id = c.id ${whereClause} ORDER BY ap.relevance_score DESC, ap.created_at DESC LIMIT ${limit} OFFSET ${offset}`
+      ) as any[];
+
+      return { prospects: rows, total, page, limit };
+    });
+
+export const updateCampaign = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as { id: string; name?: string; status?: string; target_industries?: string[]; target_regions?: string[]; max_prospects?: number; schedule_cron?: string; notes?: string })
+  .handler(async ({ data }) => {
+    const { getSql } = await import("~/lib/db");
+    const sql = getSql();
+    const now = new Date().toISOString();
+
+    const sets: string[] = [];
+    if (data.name !== undefined) sets.push(`name = '${data.name.replace(/'/g, "''")}'`);
+    if (data.status !== undefined) sets.push(`status = '${data.status}'`);
+    if (data.target_industries !== undefined) sets.push(`target_industries = '${JSON.stringify(data.target_industries).replace(/'/g, "''")}'`);
+    if (data.target_regions !== undefined) sets.push(`target_regions = '${JSON.stringify(data.target_regions).replace(/'/g, "''")}'`);
+    if (data.max_prospects !== undefined) sets.push(`max_prospects = ${data.max_prospects}`);
+    if (data.schedule_cron !== undefined) sets.push(`schedule_cron = '${(data.schedule_cron || "").replace(/'/g, "''")}'`);
+    if (data.notes !== undefined) sets.push(`notes = '${(data.notes || "").replace(/'/g, "''")}'`);
+
+    if (sets.length === 0) return { success: false, error: "No fields to update" };
+
+    sets.push(`updated_at = '${now}'`);
+    sql.unsafe(`UPDATE agent_campaigns SET ${sets.join(", ")} WHERE id = '${data.id}'`);
+
+    return { success: true };
   });
