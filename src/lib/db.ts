@@ -1,75 +1,128 @@
-import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
-import { readFileSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { readFileSync, readdirSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 /**
- * Server-only handle to the Neon serverless Postgres database.
+ * SQLite-backed database for the LOGISTIQS NETWORK MVP.
  *
- * `getSql()` resolves lazily — the site builds and serves even before a database
- * is connected. The error only surfaces if a query actually runs without
- * `DATABASE_URL`.
+ * Uses Bun's built-in SQLite — no external credentials needed.
+ * Migratable to Neon/Postgres later when the proper connection string is available.
  *
- * Use inside a `createServerFn()` handler or an `src/routes/api/*` route:
+ * Usage inside server functions / API routes:
  *
- *   const rows = await getSql()`select id, name from companies`;
+ *   const rows = getSql()`select id, name from companies`;
  */
-let _sql: NeonQueryFunction<false, false> | null = null;
 
-export function getSql(): NeonQueryFunction<false, false> {
-  if (_sql) return _sql;
-  const url = process.env.DATABASE_URL;
-  if (!url) {
-    throw new Error(
-      "DATABASE_URL is not set — connect a database (via the database card) before running queries.",
-    );
+const DB_PATH = join(process.cwd(), "data", "logistiqs.db");
+
+let _db: Database | null = null;
+
+function getDb(): Database {
+  if (_db) return _db;
+  // Ensure data directory exists
+  const dir = join(process.cwd(), "data");
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  _db = new Database(DB_PATH);
+  _db.exec("PRAGMA journal_mode=WAL");
+  _db.exec("PRAGMA foreign_keys=ON");
+  return _db;
+}
+
+/** Tagged template SQL function — works like neon() */
+export function getSql() {
+  const db = getDb();
+
+  function sql(strings: TemplateStringsArray, ...values: unknown[]): any[] {
+    // Build query with placeholders
+    let text = strings[0];
+    const params: unknown[] = [];
+    for (let i = 0; i < values.length; i++) {
+      params.push(values[i]);
+      text += "?" + strings[i + 1];
+    }
+    const stmt = db.prepare(text);
+    // Determine if it's a SELECT-like query or a mutation
+    const trimmed = text.trim().toUpperCase();
+    if (
+      trimmed.startsWith("SELECT") ||
+      trimmed.startsWith("WITH") ||
+      trimmed.startsWith("PRAGMA")
+    ) {
+      return stmt.all(...params) as any[];
+    }
+    // For INSERT/UPDATE/DELETE/CREATE/etc.
+    stmt.run(...params);
+    return [];
   }
-  _sql = neon(url);
-  return _sql;
+
+  // unsafe() for raw SQL strings (used by migrations)
+  sql.unsafe = (rawSql: string) => {
+    const db = getDb();
+    const trimmed = rawSql.trim().toUpperCase();
+    if (
+      trimmed.startsWith("SELECT") ||
+      trimmed.startsWith("WITH") ||
+      trimmed.startsWith("PRAGMA")
+    ) {
+      return db.prepare(rawSql).all() as any[];
+    }
+    db.exec(rawSql);
+    return [];
+  };
+
+  return sql;
 }
 
 /**
- * Apply all pending migrations from db/migrations/ against the Neon database.
- * Idempotent: tracks applied versions in the schema_version table.
- * Call once at server startup.
+ * Apply all pending migrations from db/migrations/.
+ * Uses files with .sqlite.sql suffix for SQLite-specific DDL.
+ * Falls back to .sql files if no .sqlite.sql exists.
  */
 export async function runMigrations(): Promise<string[]> {
   const applied: string[] = [];
   try {
     const sql = getSql();
+    const db = getDb();
 
     // Ensure schema_version table exists
-    await sql`
-      CREATE TABLE IF NOT EXISTS schema_version (
-        version INTEGER PRIMARY KEY,
-        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `;
+    db.exec(`CREATE TABLE IF NOT EXISTS schema_version (
+      version INTEGER PRIMARY KEY,
+      applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
 
-    // Read migration files
     const migrationsDir = join(process.cwd(), "db", "migrations");
-    let files: string[];
-    try {
-      const { readdirSync } = await import("node:fs");
-      files = readdirSync(migrationsDir)
-        .filter((f) => f.endsWith(".sql"))
-        .sort();
-    } catch {
-      return applied; // no migrations dir — nothing to apply
-    }
+    if (!existsSync(migrationsDir)) return applied;
+
+    // Prefer .sqlite.sql files, fall back to .sql
+    const allFiles = readdirSync(migrationsDir)
+      .filter((f) => f.endsWith(".sqlite.sql") || f.endsWith(".sql"));
+
+    // If both .sqlite.sql and .sql exist for the same migration, prefer .sqlite.sql
+    const sqliteVersions = new Set(allFiles.filter(f => f.endsWith(".sqlite.sql")));
+    const files = allFiles
+      .filter((f) => {
+        if (f.endsWith(".sqlite.sql")) return true;
+        // Only include .sql if no corresponding .sqlite.sql exists
+        return !sqliteVersions.has(f.replace(".sql", ".sqlite.sql"));
+      })
+      .sort();
 
     for (const file of files) {
       const version = parseInt(file.split("_")[0], 10);
       if (isNaN(version)) continue;
 
       // Check if already applied
-      const existing = await sql`
-        SELECT version FROM schema_version WHERE version = ${version}
-      `;
-      if (existing.length > 0) continue;
+      const existing = db
+        .prepare("SELECT version FROM schema_version WHERE version = ?")
+        .get(version);
+      if (existing) continue;
 
-      // Apply migration
-      const sql_text = readFileSync(join(migrationsDir, file), "utf8");
-      await sql.unsafe(sql_text);
+      const sqlText = readFileSync(join(migrationsDir, file), "utf8");
+      sql.unsafe(sqlText);
+
+      db.prepare(
+        "INSERT INTO schema_version (version) VALUES (?)"
+      ).run(version);
 
       applied.push(file);
       console.log(`[DB] Migration ${file} applied successfully.`);
@@ -80,6 +133,5 @@ export async function runMigrations(): Promise<string[]> {
   return applied;
 }
 
-// Re-export for backward compatibility (existing code using `import { sql } from "~/db"`)
-// Deprecated: prefer getSql()
+// Backward compatibility
 export { getSql as sql };
