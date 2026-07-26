@@ -1,37 +1,54 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
+import { getCurrentUser } from "~/lib/server-fns";
 
 interface AuthGuardProps {
   children: ReactNode;
+  /** If set, also checks the user's role */
   role?: "shipper" | "carrier";
+  /** Where to redirect unauthenticated users */
+  redirectTo?: string;
 }
 
-/**
- * Client-side auth guard wrapper.
- * Redirects to /login if no session cookie is present.
- * In the MVP, this is a lightweight client-side check — actual auth
- * enforcement happens server-side via requireAuth().
- */
-export default function AuthGuard({ children, role }: AuthGuardProps) {
+export default function AuthGuard({
+  children,
+  role,
+  redirectTo = "/login",
+}: AuthGuardProps) {
   const navigate = useNavigate();
-  const [checked, setChecked] = useState(false);
+  const [checking, setChecking] = useState(true);
+  const [authorized, setAuthorized] = useState(false);
 
   useEffect(() => {
-    // Check for session cookie presence (shallow client-side check)
-    const hasSession = document.cookie.includes("session_id=");
-    if (!hasSession) {
-      navigate({ to: "/login" });
-    }
-    setChecked(true);
-  }, [navigate]);
+    let cancelled = false;
+    getCurrentUser().then((user) => {
+      if (cancelled) return;
+      if (!user) {
+        navigate({ to: redirectTo });
+        return;
+      }
+      if (role && user.role !== role) {
+        navigate({ to: "/" });
+        return;
+      }
+      setAuthorized(true);
+      setChecking(false);
+    }).catch(() => {
+      if (!cancelled) {
+        navigate({ to: redirectTo });
+      }
+    });
+    return () => { cancelled = true; };
+  }, [navigate, role, redirectTo]);
 
-  if (!checked) {
+  if (checking) {
     return (
-      <div className="flex min-h-dvh items-center justify-center">
-        <p className="text-gray-500">Loading...</p>
+      <div className="flex min-h-[50vh] items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-indigo-600 border-t-transparent" />
       </div>
     );
   }
 
+  if (!authorized) return null;
   return <>{children}</>;
 }
