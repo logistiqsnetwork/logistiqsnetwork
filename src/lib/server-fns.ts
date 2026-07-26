@@ -314,3 +314,368 @@ export const claimLoad = createServerFn({ method: "POST" })
 
     return { success: true };
   });
+
+// ---------------------------------------------------------------------------
+// CRM — Companies
+// ---------------------------------------------------------------------------
+
+export interface CompanyRow {
+  id: string;
+  name: string;
+  company_type: string;
+  phone: string | null;
+  address_line1: string | null;
+  address_city: string | null;
+  address_state: string | null;
+  address_zip: string | null;
+  website: string | null;
+  industry: string | null;
+  source: string | null;
+  onboarding_stage: string;
+  notes: string | null;
+  created_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+  last_contact_date: string | null;
+  next_follow_up: string | null;
+}
+
+export interface ContactRow {
+  id: string;
+  company_id: string;
+  first_name: string;
+  last_name: string;
+  title: string | null;
+  email: string | null;
+  phone: string | null;
+  is_primary: number;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OutreachRow {
+  id: string;
+  company_id: string;
+  contact_id: string | null;
+  method: string;
+  direction: string;
+  status: string;
+  subject: string | null;
+  body: string | null;
+  notes: string | null;
+  follow_up_date: string | null;
+  created_by_user_id: string | null;
+  created_at: string;
+}
+
+export const getCompanies = createServerFn({ method: "GET" })
+  .validator((d: unknown) => d as {
+    search?: string;
+    industry?: string;
+    stage?: string;
+    company_type?: string;
+  } | undefined)
+  .handler(async ({ data }) => {
+    const { getSql } = await import("~/lib/db");
+    const sql = getSql();
+
+    let query = `
+      SELECT c.*,
+        (SELECT MAX(o.created_at) FROM outreach_records o WHERE o.company_id = c.id) as last_contact_date,
+        (SELECT o2.follow_up_date FROM outreach_records o2
+         WHERE o2.company_id = c.id AND o2.follow_up_date >= date('now')
+         ORDER BY o2.follow_up_date ASC LIMIT 1) as next_follow_up
+      FROM companies c
+      WHERE 1=1
+    `;
+    const params: unknown[] = [];
+
+    if (data?.search) {
+      query += ` AND c.name LIKE ?`;
+      params.push(`%${data.search}%`);
+    }
+    if (data?.industry) {
+      query += ` AND c.industry = ?`;
+      params.push(data.industry);
+    }
+    if (data?.stage) {
+      query += ` AND c.onboarding_stage = ?`;
+      params.push(data.stage);
+    }
+    if (data?.company_type) {
+      query += ` AND c.company_type = ?`;
+      params.push(data.company_type);
+    }
+
+    query += ` ORDER BY c.created_at DESC`;
+
+    // Build query manually since we need dynamic WHERE
+    let paramIdx = 0;
+    const finalQuery = query.replace(/\?/g, () => {
+      const val = params[paramIdx++];
+      if (typeof val === "string") return `'${val.replace(/'/g, "''")}'`;
+      return String(val);
+    });
+
+    const rows = sql.unsafe(finalQuery) as CompanyRow[];
+    return rows;
+  });
+
+export const getCompany = createServerFn({ method: "GET" })
+  .validator((d: unknown) => d as { id: string })
+  .handler(async ({ data }) => {
+    const { getSql } = await import("~/lib/db");
+    const sql = getSql();
+
+    const companies = sql`SELECT * FROM companies WHERE id = ${data.id}` as any[];
+    if (companies.length === 0) return null;
+    const company = companies[0] as CompanyRow;
+
+    const contacts = sql`SELECT * FROM contacts WHERE company_id = ${data.id} ORDER BY is_primary DESC, created_at DESC` as ContactRow[];
+
+    const outreach = sql`
+      SELECT o.*, c.first_name || ' ' || c.last_name as contact_name
+      FROM outreach_records o
+      LEFT JOIN contacts c ON o.contact_id = c.id
+      WHERE o.company_id = ${data.id}
+      ORDER BY o.created_at DESC
+    ` as any[];
+
+    return { company, contacts, outreach };
+  });
+
+export const createCompany = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as {
+    name: string;
+    company_type: string;
+    industry?: string;
+    phone?: string;
+    address_line1?: string;
+    address_city?: string;
+    address_state?: string;
+    address_zip?: string;
+    website?: string;
+    source?: string;
+    notes?: string;
+  })
+  .handler(async ({ data }) => {
+    const session = await getSessionFromFn();
+    if (!session) throw new Error("Unauthorized");
+
+    const { getSql } = await import("~/lib/db");
+    const sql = getSql();
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    sql`
+      INSERT INTO companies (
+        id, name, company_type, phone,
+        address_line1, address_city, address_state, address_zip,
+        website, industry, source, onboarding_stage, notes,
+        created_by_user_id, created_at, updated_at
+      ) VALUES (
+        ${id}, ${data.name}, ${data.company_type}, ${data.phone ?? null},
+        ${data.address_line1 ?? null}, ${data.address_city ?? null}, ${data.address_state ?? null}, ${data.address_zip ?? null},
+        ${data.website ?? null}, ${data.industry ?? null}, ${data.source ?? 'manual'}, 'lead', ${data.notes ?? null},
+        ${session.userId}, ${now}, ${now}
+      )
+    `;
+
+    return { id };
+  });
+
+export const updateCompany = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as {
+    id: string;
+    name?: string;
+    company_type?: string;
+    industry?: string;
+    phone?: string;
+    address_line1?: string;
+    address_city?: string;
+    address_state?: string;
+    address_zip?: string;
+    website?: string;
+    source?: string;
+    onboarding_stage?: string;
+    notes?: string;
+  })
+  .handler(async ({ data }) => {
+    const session = await getSessionFromFn();
+    if (!session) throw new Error("Unauthorized");
+
+    const { getSql } = await import("~/lib/db");
+    const sql = getSql();
+    const now = new Date().toISOString();
+
+    const fields: string[] = [];
+    const values: unknown[] = [];
+
+    const fieldMap: Record<string, string> = {
+      name: "name",
+      company_type: "company_type",
+      industry: "industry",
+      phone: "phone",
+      address_line1: "address_line1",
+      address_city: "address_city",
+      address_state: "address_state",
+      address_zip: "address_zip",
+      website: "website",
+      source: "source",
+      onboarding_stage: "onboarding_stage",
+      notes: "notes",
+    };
+
+    for (const [key, col] of Object.entries(fieldMap)) {
+      if ((data as any)[key] !== undefined) {
+        fields.push(`${col} = ?`);
+        values.push((data as any)[key]);
+      }
+    }
+
+    if (fields.length === 0) return { success: true };
+
+    fields.push("updated_at = ?");
+    values.push(now);
+    values.push(data.id);
+
+    const query = `UPDATE companies SET ${fields.join(", ")} WHERE id = ?`;
+    sql.unsafe(
+      query.replace(/\?/g, () => {
+        const v = values.shift();
+        if (v === null) return "NULL";
+        if (typeof v === "string") return `'${v.replace(/'/g, "''")}'`;
+        return String(v);
+      })
+    );
+
+    return { success: true };
+  });
+
+// ---------------------------------------------------------------------------
+// CRM — Contacts
+// ---------------------------------------------------------------------------
+
+export const getContacts = createServerFn({ method: "GET" })
+  .validator((d: unknown) => d as { companyId: string })
+  .handler(async ({ data }) => {
+    const { getSql } = await import("~/lib/db");
+    const sql = getSql();
+    const rows = sql`SELECT * FROM contacts WHERE company_id = ${data.companyId} ORDER BY is_primary DESC, created_at DESC` as ContactRow[];
+    return rows;
+  });
+
+export const createContact = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as {
+    company_id: string;
+    first_name: string;
+    last_name: string;
+    title?: string;
+    email?: string;
+    phone?: string;
+    is_primary?: boolean;
+    notes?: string;
+  })
+  .handler(async ({ data }) => {
+    const session = await getSessionFromFn();
+    if (!session) throw new Error("Unauthorized");
+
+    const { getSql } = await import("~/lib/db");
+    const sql = getSql();
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    sql`
+      INSERT INTO contacts (id, company_id, first_name, last_name, title, email, phone, is_primary, notes, created_at, updated_at)
+      VALUES (
+        ${id}, ${data.company_id}, ${data.first_name}, ${data.last_name},
+        ${data.title ?? null}, ${data.email ?? null}, ${data.phone ?? null},
+        ${data.is_primary ? 1 : 0}, ${data.notes ?? null}, ${now}, ${now}
+      )
+    `;
+
+    return { id };
+  });
+
+// ---------------------------------------------------------------------------
+// CRM — Outreach
+// ---------------------------------------------------------------------------
+
+export const getOutreach = createServerFn({ method: "GET" })
+  .validator((d: unknown) => d as { companyId: string })
+  .handler(async ({ data }) => {
+    const { getSql } = await import("~/lib/db");
+    const sql = getSql();
+    const rows = sql`
+      SELECT o.*, c.first_name || ' ' || c.last_name as contact_name
+      FROM outreach_records o
+      LEFT JOIN contacts c ON o.contact_id = c.id
+      WHERE o.company_id = ${data.companyId}
+      ORDER BY o.created_at DESC
+    ` as any[];
+    return rows;
+  });
+
+export const createOutreach = createServerFn({ method: "POST" })
+  .validator((d: unknown) => d as {
+    company_id: string;
+    contact_id?: string;
+    method: string;
+    subject?: string;
+    notes?: string;
+    follow_up_date?: string;
+    status?: string;
+  })
+  .handler(async ({ data }) => {
+    const session = await getSessionFromFn();
+    if (!session) throw new Error("Unauthorized");
+
+    const { getSql } = await import("~/lib/db");
+    const sql = getSql();
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    sql`
+      INSERT INTO outreach_records (
+        id, company_id, contact_id, method, direction, status,
+        subject, notes, follow_up_date, created_by_user_id, created_at
+      ) VALUES (
+        ${id}, ${data.company_id}, ${data.contact_id ?? null}, ${data.method},
+        'outbound', ${data.status ?? 'pending'},
+        ${data.subject ?? null}, ${data.notes ?? null}, ${data.follow_up_date ?? null},
+        ${session.userId}, ${now}
+      )
+    `;
+
+    return { id };
+  });
+
+// ---------------------------------------------------------------------------
+// CRM — Stats
+// ---------------------------------------------------------------------------
+
+export const getCRMStats = createServerFn({ method: "GET" }).handler(async () => {
+  const { getSql } = await import("~/lib/db");
+  const sql = getSql();
+
+  const total = sql.unsafe(`SELECT COUNT(*) as count FROM companies`) as any[];
+  const byStage = sql.unsafe(
+    `SELECT onboarding_stage, COUNT(*) as count FROM companies GROUP BY onboarding_stage`
+  ) as any[];
+
+  const outreachThisWeek = sql.unsafe(
+    `SELECT COUNT(*) as count FROM outreach_records WHERE created_at >= date('now', '-7 days')`
+  ) as any[];
+
+  const followUpsDue = sql.unsafe(
+    `SELECT COUNT(*) as count FROM outreach_records WHERE follow_up_date BETWEEN date('now') AND date('now', '+7 days')`
+  ) as any[];
+
+  return {
+    total: total[0]?.count ?? 0,
+    byStage,
+    outreachThisWeek: outreachThisWeek[0]?.count ?? 0,
+    followUpsDue: followUpsDue[0]?.count ?? 0,
+  };
+});
