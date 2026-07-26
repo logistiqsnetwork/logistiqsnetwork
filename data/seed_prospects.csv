@@ -1,0 +1,5 @@
+# Seed Prospects (CSV)
+# This file provides initial prospect data for the freight acquisition agent.
+# Columns: company_name, industry, city, state, website, contact_name, contact_email, contact_phone
+# Add rows below to seed the agent's discovery pipeline.
+company_name,industry,city,state,website,contact_name,contact_email,contact_phone
